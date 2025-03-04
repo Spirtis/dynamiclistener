@@ -121,18 +121,11 @@ func NewSignedCert(cfg Config, key crypto.Signer, caCert *x509.Certificate, caKe
 	if len(cfg.Usages) == 0 {
 		return nil, errors.New("must specify at least one ExtKeyUsage")
 	}
-	expiresAt := duration365d
+	var expiresAt time.Duration
 	if cfg.ExpiresAt > 0 {
 		expiresAt = time.Duration(cfg.ExpiresAt)
 	} else {
-		envExpirationDays := os.Getenv("CATTLE_NEW_SIGNED_CERT_EXPIRATION_DAYS")
-		if envExpirationDays != "" {
-			if envExpirationDaysInt, err := strconv.Atoi(envExpirationDays); err != nil {
-				logrus.Infof("[NewSignedCert] expiration days from ENV (%s) could not be converted to int (falling back to default value: %d)", envExpirationDays, expiresAt)
-			} else {
-				expiresAt = time.Hour * 24 * time.Duration(envExpirationDaysInt)
-			}
-		}
+		expiresAt = duration365d
 	}
 
 	certTmpl := x509.Certificate{

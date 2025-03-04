@@ -25,28 +25,18 @@ func GenCA() (*x509.Certificate, crypto.Signer, error) {
 	return caCert, caKey, nil
 }
 
-// Deprecated: Use LoadOrGenCAChain instead as it supports intermediate CAs
 func LoadOrGenCA() (*x509.Certificate, crypto.Signer, error) {
-	chain, signer, err := LoadOrGenCAChain()
-	if err != nil {
-		return nil, nil, err
-	}
-	return chain[0], signer, err
-}
-
-func LoadOrGenCAChain() ([]*x509.Certificate, crypto.Signer, error) {
-	certs, key, err := loadCA()
+	cert, key, err := loadCA()
 	if err == nil {
-		return certs, key, nil
+		return cert, key, nil
 	}
 
-	cert, key, err := GenCA()
+	cert, key, err = GenCA()
 	if err != nil {
 		return nil, nil, err
 	}
-	certs = []*x509.Certificate{cert}
 
-	certBytes, keyBytes, err := MarshalChain(key, certs...)
+	certBytes, keyBytes, err := Marshal(cert, key)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -63,22 +53,14 @@ func LoadOrGenCAChain() ([]*x509.Certificate, crypto.Signer, error) {
 		return nil, nil, err
 	}
 
-	return certs, key, nil
+	return cert, key, nil
 }
 
-func loadCA() ([]*x509.Certificate, crypto.Signer, error) {
-	return LoadCertsChain("./certs/ca.pem", "./certs/ca.key")
+func loadCA() (*x509.Certificate, crypto.Signer, error) {
+	return LoadCerts("./certs/ca.pem", "./certs/ca.key")
 }
 
 func LoadCA(caPem, caKey []byte) (*x509.Certificate, crypto.Signer, error) {
-	chain, signer, err := LoadCAChain(caPem, caKey)
-	if err != nil {
-		return nil, nil, err
-	}
-	return chain[0], signer, nil
-}
-
-func LoadCAChain(caPem, caKey []byte) ([]*x509.Certificate, crypto.Signer, error) {
 	key, err := cert.ParsePrivateKeyPEM(caKey)
 	if err != nil {
 		return nil, nil, err
@@ -88,24 +70,15 @@ func LoadCAChain(caPem, caKey []byte) ([]*x509.Certificate, crypto.Signer, error
 		return nil, nil, fmt.Errorf("key is not a crypto.Signer")
 	}
 
-	certs, err := cert.ParseCertsPEM(caPem)
+	cert, err := ParseCertPEM(caPem)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	return certs, signer, nil
+	return cert, signer, nil
 }
 
-// Deprecated: Use LoadCertsChain instead as it supports intermediate CAs
 func LoadCerts(certFile, keyFile string) (*x509.Certificate, crypto.Signer, error) {
-	chain, signer, err := LoadCertsChain(certFile, keyFile)
-	if err != nil {
-		return nil, nil, err
-	}
-	return chain[0], signer, err
-}
-
-func LoadCertsChain(certFile, keyFile string) ([]*x509.Certificate, crypto.Signer, error) {
 	caPem, err := ioutil.ReadFile(certFile)
 	if err != nil {
 		return nil, nil, err
@@ -115,5 +88,5 @@ func LoadCertsChain(certFile, keyFile string) ([]*x509.Certificate, crypto.Signe
 		return nil, nil, err
 	}
 
-	return LoadCAChain(caPem, caKey)
+	return LoadCA(caPem, caKey)
 }
