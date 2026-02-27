@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rancher/dynamiclistener/cert"
 	"github.com/sirupsen/logrus"
@@ -24,7 +25,7 @@ import (
 const (
 	cnPrefix    = "listener.cattle.io/cn-"
 	Static      = "listener.cattle.io/static"
-	fingerprint = "listener.cattle.io/fingerprint"
+	Fingerprint = "listener.cattle.io/fingerprint"
 )
 
 var (
@@ -32,11 +33,12 @@ var (
 )
 
 type TLS struct {
-	CACert       *x509.Certificate
-	CAKey        crypto.Signer
-	CN           string
-	Organization []string
-	FilterCN     func(...string) []string
+	CACert              []*x509.Certificate
+	CAKey               crypto.Signer
+	CN                  string
+	Organization        []string
+	FilterCN            func(...string) []string
+	ExpirationDaysCheck int
 }
 
 func cns(secret *v1.Secret) (cns []string) {
@@ -72,7 +74,8 @@ func collectCNs(secret *v1.Secret) (domains []string, ips []net.IP, err error) {
 
 // Merge combines the SAN lists from the target and additional Secrets, and
 // returns a potentially modified Secret, along with a bool indicating if the
-// returned Secret is not the same as the target Secret.
+// returned Secret is not the same as the target Secret. Secrets with expired
+// certificates will never be returned.
 //
 // If the merge would not add any CNs to the additional Secret, the additional
 // Secret is returned, to allow for certificate rotation/regeneration.
@@ -93,17 +96,17 @@ func (t *TLS) Merge(target, additional *v1.Secret) (*v1.Secret, bool, error) {
 
 	// if the additional secret already has all the CNs, use it in preference to the
 	// current one. This behavior is required to allow for renewal or regeneration.
-	if !NeedsUpdate(0, additional, mergedCNs...) {
+	if !NeedsUpdate(0, additional, mergedCNs...) && !t.IsExpired(additional) {
 		return additional, true, nil
 	}
 
 	// if the target secret already has all the CNs, continue using it. The additional
 	// cert had only a subset of the current CNs, so nothing needs to be added.
-	if !NeedsUpdate(0, target, mergedCNs...) {
+	if !NeedsUpdate(0, target, mergedCNs...) && !t.IsExpired(target) {
 		return target, false, nil
 	}
 
-	// neither cert currently has all the necessary CNs; generate a new one.
+	// neither cert currently has all the necessary CNs or is unexpired; generate a new one.
 	return t.generateCert(target, mergedCNs...)
 }
 
@@ -175,7 +178,7 @@ func (t *TLS) generateCert(secret *v1.Secret, cn ...string) (*v1.Secret, bool, e
 		return nil, false, err
 	}
 
-	keyBytes, certBytes, err := MarshalChain(privateKey, newCert, t.CACert)
+	keyBytes, certBytes, err := MarshalChain(privateKey, append([]*x509.Certificate{newCert}, t.CACert...)...)
 	if err != nil {
 		return nil, false, err
 	}
@@ -186,9 +189,28 @@ func (t *TLS) generateCert(secret *v1.Secret, cn ...string) (*v1.Secret, bool, e
 	secret.Type = v1.SecretTypeTLS
 	secret.Data[v1.TLSCertKey] = certBytes
 	secret.Data[v1.TLSPrivateKeyKey] = keyBytes
-	secret.Annotations[fingerprint] = fmt.Sprintf("SHA1=%X", sha1.Sum(newCert.Raw))
+	secret.Annotations[Fingerprint] = fmt.Sprintf("SHA1=%X", sha1.Sum(newCert.Raw))
 
 	return secret, true, nil
+}
+
+func (t *TLS) IsExpired(secret *v1.Secret) bool {
+	if secret == nil {
+		return false
+	}
+
+	certsPem := secret.Data[v1.TLSCertKey]
+	if len(certsPem) == 0 {
+		return false
+	}
+
+	certificates, err := cert.ParseCertsPEM(certsPem)
+	if err != nil || len(certificates) == 0 {
+		return false
+	}
+
+	expirationDays := time.Duration(t.ExpirationDaysCheck) * time.Hour * 24
+	return time.Now().Add(expirationDays).After(certificates[0].NotAfter)
 }
 
 func (t *TLS) Verify(secret *v1.Secret) error {
@@ -208,14 +230,16 @@ func (t *TLS) Verify(secret *v1.Secret) error {
 			x509.ExtKeyUsageAny,
 		},
 	}
-	verifyOpts.Roots.AddCert(t.CACert)
+	for _, c := range t.CACert {
+		verifyOpts.Roots.AddCert(c)
+	}
 
 	_, err = certificates[0].Verify(verifyOpts)
 	return err
 }
 
 func (t *TLS) newCert(domains []string, ips []net.IP, privateKey crypto.Signer) (*x509.Certificate, error) {
-	return NewSignedCert(privateKey, t.CACert, t.CAKey, t.CN, t.Organization, domains, ips)
+	return NewSignedCert(privateKey, t.CACert[0], t.CAKey, t.CN, t.Organization, domains, ips)
 }
 
 func populateCN(secret *v1.Secret, cn ...string) *v1.Secret {
